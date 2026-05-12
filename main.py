@@ -1,94 +1,89 @@
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Response 
 from pydantic import BaseModel, HttpUrl
 import string
-import random
-from datetime import datetime
+import secrets  
+from datetime import datetime, timezone 
 
 app = FastAPI()
 
 urls = []
+next_id = 1 
 
 class URLCreate(BaseModel):
     url: HttpUrl
 
+class URLResponse(BaseModel):
+    id: int
+    url: str
+    shortCode: str
+    createdAt: str
+    updatedAt: str
 
-count =0
+class URLStatsResponse(URLResponse):
+    accessCount: int
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def _find(short_code: str):
+    return next((item for item in urls if item["shortCode"] == short_code), None)
 
 @app.get('/')
 def test():
-    return JSONResponse(content={"message": "Hello World"})
+    return {"message": "Hello World"}
 
-@app.post('/shorten')
-def create_short_url(URLRequest : URLCreate):
-    existing_url = next((item for item in urls if item.get("url") == str(URLRequest.url)), None)
-    if existing_url:
-        return JSONResponse(status_code=400, content={"error": "URL has already been shortened"})
-
-    letters = string.ascii_letters
-    digits = string.digits
+@app.post("/shorten", response_model=URLResponse, status_code=201)
+def create_short_url(payload: URLCreate): 
+    global next_id
+    alphabet = string.ascii_letters + string.digits
     existing_codes = {item["shortCode"] for item in urls}
     while True:
-        short_url = ''.join(random.choices(letters, k=4) + random.choices(digits, k=3))
-        if short_url not in existing_codes:
+        short_code = "".join(secrets.choice(alphabet) for _ in range(7))
+        if short_code not in existing_codes:
             break
-    time_created = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    now = _now_iso()
     url_content = {
-            "id": len(urls) +1,
-
-            "url": str(URLRequest.url),
-            "shortCode": short_url,
-            "createdAt": time_created,
-            "updatedAt": time_created,
-            "accessCount": 0
-        }
+        "id": next_id,
+        "url": str(payload.url),
+        "shortCode": short_code,
+        "createdAt": now,
+        "updatedAt": now,
+        "accessCount": 0,
+    }
+    next_id += 1
     urls.append(url_content)
-    return JSONResponse(
-        status_code=201,
-        content= url_content
-    )
 
-@app.get('/shorten/{short_code}')
+    return url_content
+
+@app.get("/shorten/{short_code}", response_model=URLResponse)
 def get_url(short_code: str):
-    existing_url = next((item for item in urls if item.get("shortCode") == short_code), None)
-    if not existing_url:
-        return JSONResponse(status_code=404, content={"error": "URL not found"})
-    existing_url["accessCount"] += 1
-    
-    return JSONResponse(status_code=200, content= existing_url) 
-
-@app.put('/shorten/{short_code}')
-def update_url(URLRequest : URLCreate, short_code: str):
-    url = next((item for item in urls if item.get("shortCode") == short_code), None)
+    url = _find(short_code)
     if not url:
-        return JSONResponse(status_code=404, content={"error": "URL not found"})
-    url["url"] = str(URLRequest.url)
-    url["updatedAt"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
-    return JSONResponse(status_code=200, content=url)
+        raise HTTPException(status_code=404, detail="URL not found")
+    url["accessCount"] += 1
+    return url
 
-@app.delete('/shorten/{short_code}')
+@app.put("/shorten/{short_code}", response_model=URLResponse) 
+def update_url(short_code: str, payload: URLCreate): 
+    url = _find(short_code)
+    if not url:
+        raise HTTPException(status_code=404, detail="URL not found")  # CHANGED
+    url["url"] = str(payload.url)
+    url["updatedAt"] = _now_iso()
+    return url
+
+@app.delete("/shorten/{short_code}", status_code=204)  
 def delete_url(short_code: str):
-    url = next((item for item in urls if item.get("shortCode") == short_code), None)
+    url = _find(short_code)
     if not url:
-        return JSONResponse(status_code=404, content={"error": "URL not found"})
+        raise HTTPException(status_code=404, detail="URL not found")
     urls.remove(url)
-    return JSONResponse(status_code=204, content= None)
+    return Response(status_code=204)
 
-@app.get('/shorten/{short_code}/stats')
+@app.get("/shorten/{short_code}/stats", response_model=URLStatsResponse)
 def get_stats(short_code: str):
-    url = next((item for item in urls if item.get("shortCode") == short_code), None)
+    url = _find(short_code)
     if not url:
-        return JSONResponse(status_code=404, content={"error": "URL not found"})
-    return JSONResponse(
-        status_code=200,
-        content={
-            "id": url["id"],
-            "url": url["url"],
-            "shortCode": url["shortCode"],
-            "createdAt": url["createdAt"],
-            "updatedAt": url["updatedAt"],
-            "accessCount": url["accessCount"]
-        }
-    )
-    
+        raise HTTPException(status_code=404, detail="URL not found")
+    return url
